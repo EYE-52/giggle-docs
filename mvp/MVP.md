@@ -45,8 +45,9 @@ This is the definitive **Giggle MVP Product Blueprint**. This document is design
 
 ## 3. Technical Constraints & Omissions (The "Keep it Simple" Rules)
 
-* **No Authentication:** Identity is handled by a temporary `username` stored in the browser's session. No passwords.
-* **No Database:** If the Node.js server restarts, all active rooms and codes are wiped. This is acceptable for the MVP.
+* **Google OAuth Required:** Users must be signed in with Google; API identity is based on `providerAccountId` from the Auth.js MongoDB `accounts` collection.
+* **Secured APIs:** All product APIs are authenticated/authorized server-side (leader-only and squad-member checks where needed).
+* **Ephemeral Product State:** Squad rooms/matchmaking can remain in-memory/Redis for MVP; auth/account data persists in MongoDB via Auth.js.
 * **Desktop-First:** Optimized for Chrome/Safari on desktop to avoid the complexities of mobile browser camera constraints.
 * **No Moderation (For Demo):** The initial demo assumes a "trusted" group of testers. AI moderation will be added in Phase 2.
 

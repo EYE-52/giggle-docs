@@ -6,6 +6,7 @@ This document defines the first backend APIs for Giggle MVP, including:
 - intended backend function/handler name
 
 Scope matches the MVP docs: lobby-first, then matchmaking, then encounter bootstrap.
+All product APIs are secured with Google OAuth identity from your existing Auth.js login.
 
 ---
 
@@ -17,10 +18,32 @@ Scope matches the MVP docs: lobby-first, then matchmaking, then encounter bootst
 ### Content Type
 - Request/response JSON unless otherwise stated.
 
-### Identity (MVP)
-- No full auth system.
-- `memberId` and `squadId` are treated as session identity for MVP requests.
-- Leader-only endpoints validate `member.role === "leader"`.
+### Authentication & Identity
+- **Auth source:** Existing Google OAuth session (Auth.js / NextAuth).
+- **Security model:** All product APIs require authentication.
+- **Public exceptions:** `GET /health` and `GET /ready` can stay unauthenticated.
+- **Identity key used across APIs:** `providerAccountId` from MongoDB `accounts` collection (`provider: "google"`).
+- **Identity injection:** `providerAccountId`, internal `userId`, and display profile are resolved in auth middleware and attached to request context.
+
+### Auth Header
+- `Authorization: Bearer <session-token-or-jwt>`
+
+### Auth Middleware (intended)
+- `requireApiAuth()` -> validates session/token.
+- `attachGiggleIdentity()` -> resolves `{ userId, providerAccountId, name, email, image }`.
+- `requireSquadMember()` / `requireSquadLeader()` -> authorization checks by squad role.
+
+### Identity Mapping
+```ts
+type GiggleIdentity = {
+  userId: string; // users._id from MongoDB adapter
+  provider: "google";
+  providerAccountId: string; // accounts.providerAccountId (primary external user key)
+  name?: string;
+  email?: string;
+  image?: string;
+};
+```
 
 ### Standard Error Response
 ```json
@@ -49,6 +72,8 @@ type LobbyStatus = "idle" | "searching" | "matched" | "in_encounter";
 
 type SquadMember = {
   memberId: string;
+  userId: string;
+  providerAccountId: string;
   displayName: string;
   role: SquadRole;
   ready: boolean;
@@ -73,6 +98,7 @@ type Squad = {
 - **Endpoint:** `POST /squads/create`
 - **Purpose:** Create new squad and assign requester as leader.
 - **Intended Backend Function:** `createSquadHandler` -> `createSquad()`
+- **Auth:** required (`requireApiAuth`)
 
 ### Request Body
 ```json
@@ -80,6 +106,8 @@ type Squad = {
   "displayName": "Himanshu"
 }
 ```
+
+`displayName` is optional override; if omitted, use authenticated profile name.
 
 ### Success Response (201)
 ```json
@@ -90,6 +118,8 @@ type Squad = {
     "squadCode": "GIG-882",
     "member": {
       "memberId": "mem_01JY...",
+      "userId": "usr_01JY...",
+      "providerAccountId": "108923456789012345678",
       "displayName": "Himanshu",
       "role": "leader",
       "ready": false,
@@ -102,6 +132,7 @@ type Squad = {
 
 ### Errors
 - `400 INVALID_REQUEST` (missing/invalid `displayName`)
+- `401 UNAUTHORIZED`
 - `500 INTERNAL_ERROR`
 
 ---
@@ -111,6 +142,7 @@ type Squad = {
 - **Endpoint:** `POST /squads/join`
 - **Purpose:** Join existing squad via 6-digit code.
 - **Intended Backend Function:** `joinSquadHandler` -> `joinSquadByCode()`
+- **Auth:** required (`requireApiAuth`)
 
 ### Request Body
 ```json
@@ -129,6 +161,8 @@ type Squad = {
     "squadCode": "GIG-882",
     "member": {
       "memberId": "mem_01JY...",
+      "userId": "usr_01JY...",
+      "providerAccountId": "109999999999999999999",
       "displayName": "Aman",
       "role": "member",
       "ready": false,
@@ -137,6 +171,8 @@ type Squad = {
     "members": [
       {
         "memberId": "mem_01JY_leader",
+        "userId": "usr_01JY_leader",
+        "providerAccountId": "108923456789012345678",
         "displayName": "Himanshu",
         "role": "leader",
         "ready": true,
@@ -144,6 +180,8 @@ type Squad = {
       },
       {
         "memberId": "mem_01JY_member",
+        "userId": "usr_01JY_member",
+        "providerAccountId": "109999999999999999999",
         "displayName": "Aman",
         "role": "member",
         "ready": false,
@@ -156,6 +194,7 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
 - `404 SQUAD_NOT_FOUND`
 - `409 SQUAD_FULL` (if limit reached)
 - `409 SQUAD_CLOSED` (already matched/in encounter and joins are blocked)
@@ -167,6 +206,7 @@ type Squad = {
 - **Endpoint:** `GET /squads/:squadId`
 - **Purpose:** Fetch current lobby state (poll fallback for realtime updates).
 - **Intended Backend Function:** `getSquadHandler` -> `getSquadState()`
+- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
 
 ### Request Params
 - Path: `squadId`
@@ -182,6 +222,8 @@ type Squad = {
     "members": [
       {
         "memberId": "mem_01JY_leader",
+        "userId": "usr_01JY_leader",
+        "providerAccountId": "108923456789012345678",
         "displayName": "Himanshu",
         "role": "leader",
         "ready": true,
@@ -194,6 +236,8 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
 - `404 SQUAD_NOT_FOUND`
 
 ---
@@ -203,11 +247,11 @@ type Squad = {
 - **Endpoint:** `POST /squads/:squadId/ready`
 - **Purpose:** Mark current member ready/unready in lobby.
 - **Intended Backend Function:** `setReadyHandler` -> `setMemberReadyState()`
+- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
 
 ### Request Body
 ```json
 {
-  "memberId": "mem_01JY_member",
   "ready": true
 }
 ```
@@ -219,6 +263,7 @@ type Squad = {
   "data": {
     "squadId": "sq_01JY...",
     "memberId": "mem_01JY_member",
+    "providerAccountId": "109999999999999999999",
     "ready": true,
     "readyCount": 2,
     "totalMembers": 3
@@ -227,6 +272,8 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
 - `404 SQUAD_NOT_FOUND`
 - `404 MEMBER_NOT_FOUND`
 - `409 INVALID_SQUAD_STATE` (if not allowed during encounter)
@@ -238,12 +285,11 @@ type Squad = {
 - **Endpoint:** `POST /squads/:squadId/leave`
 - **Purpose:** Member leaves squad; if leader leaves, promote next member.
 - **Intended Backend Function:** `leaveSquadHandler` -> `removeMemberAndReassignLeader()`
+- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
 
 ### Request Body
 ```json
-{
-  "memberId": "mem_01JY_member"
-}
+{}
 ```
 
 ### Success Response (200)
@@ -261,6 +307,8 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
 - `404 SQUAD_NOT_FOUND`
 - `404 MEMBER_NOT_FOUND`
 
@@ -273,12 +321,12 @@ type Squad = {
 - **Endpoint:** `POST /matchmaking/enqueue`
 - **Purpose:** Leader places squad in matchmaking queue.
 - **Intended Backend Function:** `enqueueSquadHandler` -> `enqueueSquadForMatch()`
+- **Auth:** required (`requireApiAuth`, `requireSquadLeader`)
 
 ### Request Body
 ```json
 {
   "squadId": "sq_01JY...",
-  "memberId": "mem_01JY_leader",
   "region": "ap-south-1"
 }
 ```
@@ -297,6 +345,8 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
 - `403 LEADER_ONLY`
 - `409 ALREADY_IN_QUEUE`
 - `409 NOT_READY_TO_SEARCH`
@@ -308,12 +358,12 @@ type Squad = {
 - **Endpoint:** `POST /matchmaking/dequeue`
 - **Purpose:** Leader cancels matchmaking search.
 - **Intended Backend Function:** `dequeueSquadHandler` -> `dequeueSquad()`
+- **Auth:** required (`requireApiAuth`, `requireSquadLeader`)
 
 ### Request Body
 ```json
 {
-  "squadId": "sq_01JY...",
-  "memberId": "mem_01JY_leader"
+  "squadId": "sq_01JY..."
 }
 ```
 
@@ -330,6 +380,8 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
 - `403 LEADER_ONLY`
 - `404 NOT_IN_QUEUE`
 
@@ -340,6 +392,7 @@ type Squad = {
 - **Endpoint:** `GET /matchmaking/status/:squadId`
 - **Purpose:** Fetch current matchmaking state.
 - **Intended Backend Function:** `getMatchmakingStatusHandler` -> `getSquadMatchStatus()`
+- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
 
 ### Success Response (200)
 ```json
@@ -356,6 +409,8 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
 - `404 SQUAD_NOT_FOUND`
 
 ---
@@ -365,12 +420,12 @@ type Squad = {
 - **Endpoint:** `POST /matchmaking/skip`
 - **Purpose:** Leader requests disconnect and rematch.
 - **Intended Backend Function:** `skipEncounterHandler` -> `skipAndRequeueSquad()`
+- **Auth:** required (`requireApiAuth`, `requireSquadLeader`)
 
 ### Request Body
 ```json
 {
   "squadId": "sq_01JY...",
-  "memberId": "mem_01JY_leader",
   "meetingId": "meet_01JY..."
 }
 ```
@@ -388,6 +443,8 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
 - `403 LEADER_ONLY`
 - `409 NOT_IN_ENCOUNTER`
 
@@ -400,12 +457,12 @@ type Squad = {
 - **Endpoint:** `POST /encounters/token`
 - **Purpose:** Issue short-lived Agora token for a meeting/channel.
 - **Intended Backend Function:** `issueAgoraTokenHandler` -> `createRtcToken()`
+- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
 
 ### Request Body
 ```json
 {
   "meetingId": "meet_01JY...",
-  "memberId": "mem_01JY_member",
   "squadId": "sq_01JY...",
   "role": "publisher"
 }
@@ -418,7 +475,7 @@ type Squad = {
   "data": {
     "meetingId": "meet_01JY...",
     "agoraChannel": "giggle_meet_01JY...",
-    "agoraUid": "mem_01JY_member",
+    "agoraUid": "109999999999999999999",
     "rtcToken": "<token>",
     "expiresAt": "2026-03-25T11:06:10.000Z"
   }
@@ -426,6 +483,8 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
 - `403 MEMBER_NOT_IN_MEETING`
 - `404 MEETING_NOT_FOUND`
 
@@ -436,13 +495,13 @@ type Squad = {
 - **Endpoint:** `POST /encounters/disconnect`
 - **Purpose:** Leave active encounter and return member/squad to lobby flow.
 - **Intended Backend Function:** `disconnectEncounterHandler` -> `disconnectMemberFromMeeting()`
+- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
 
 ### Request Body
 ```json
 {
   "meetingId": "meet_01JY...",
-  "squadId": "sq_01JY...",
-  "memberId": "mem_01JY_member"
+  "squadId": "sq_01JY..."
 }
 ```
 
@@ -460,6 +519,8 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
 - `404 MEETING_NOT_FOUND`
 - `404 MEMBER_NOT_FOUND`
 
@@ -470,6 +531,7 @@ type Squad = {
 - **Endpoint:** `GET /encounters/:meetingId`
 - **Purpose:** Fetch metadata required by clients for rendering context.
 - **Intended Backend Function:** `getEncounterHandler` -> `getMeetingDetails()`
+- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
 
 ### Success Response (200)
 ```json
@@ -486,6 +548,8 @@ type Squad = {
 ```
 
 ### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
 - `404 MEETING_NOT_FOUND`
 
 ---
@@ -553,13 +617,13 @@ type Squad = {
 - **Endpoint:** `POST /events`
 - **Purpose:** Track product events for MVP debugging/analytics.
 - **Intended Backend Function:** `ingestEventHandler` -> `recordProductEvent()`
+- **Auth:** required (`requireApiAuth`)
 
 ### Request Body
 ```json
 {
   "eventName": "squad_enqueued",
   "squadId": "sq_01JY...",
-  "memberId": "mem_01JY_leader",
   "metadata": {
     "region": "ap-south-1"
   },
