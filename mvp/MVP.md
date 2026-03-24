@@ -58,6 +58,13 @@ This is the definitive **Giggle MVP Product Blueprint**. This document is design
 
 ---
 
+## 5. Backend API Contract
+Detailed request/response contracts and intended backend handler functions are documented in:
+
+`BACKEND_API_SPEC.md`
+
+---
+
 ### Next Step for Giggle
 With this document finalized, your next move is to build the **Signaling Server** in the `giggle-server` repo. 
 
