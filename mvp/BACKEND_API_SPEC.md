@@ -430,6 +430,43 @@ When user has no squad:
 
 ---
 
+## 1.11 Get Agora Lobby Token
+
+- **Endpoint:** `POST /agora/lobby-token/:squadId`
+- **Purpose:** Issue Agora RTC token for squad lobby channel.
+- **Auth:** required (`requireApiAuth`, `requireSquadMemberAccess`)
+
+### Success Response (200)
+```json
+{
+  "ok": true,
+  "data": {
+    "squadId": "sq_01JY...",
+    "memberId": "mem_01JY...",
+    "appId": "your-agora-app-id",
+    "channelName": "lobby_sq_01JY...",
+    "rtcToken": "007eJx...",
+    "uid": 123456789,
+    "expiresIn": 3600,
+    "expiresAt": "2026-04-03T14:00:00.000Z"
+  }
+}
+```
+
+### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
+- `404 SQUAD_NOT_FOUND`
+- `500 AGORA_NOT_CONFIGURED`
+- `500 INTERNAL_ERROR`
+
+### Required Environment Variables
+- `AGORA_APP_ID`
+- `AGORA_APP_CERTIFICATE`
+- `AGORA_TOKEN_EXPIRY_SECONDS` (optional, default 3600)
+
+---
+
 ## 2) Matchmaking APIs (Phase 2)
 
 ## 2.1 Enqueue Squad
