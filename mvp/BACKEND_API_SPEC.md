@@ -19,19 +19,19 @@ All product APIs are secured with Google OAuth identity from your existing Auth.
 - Request/response JSON unless otherwise stated.
 
 ### Authentication & Identity
-- **Auth source:** Existing Google OAuth session (Auth.js / NextAuth).
-- **Security model:** All product APIs require authentication.
+- **Auth source:** Backend JWT issued by `POST /auth/exchange` after Google login via Auth.js / NextAuth.
+- **Security model:** All product APIs require bearer JWT auth.
 - **Public exceptions:** `GET /health` and `GET /ready` can stay unauthenticated.
-- **Identity key used across APIs:** `providerAccountId` from MongoDB `accounts` collection (`provider: "google"`).
-- **Identity injection:** `providerAccountId`, internal `userId`, and display profile are resolved in auth middleware and attached to request context.
+- **Identity key used across APIs:** `userId` (primary) with `providerAccountId` retained for backward compatibility.
+- **Identity injection:** middleware verifies JWT and attaches decoded identity to request context.
 
 ### Auth Header
 - `Authorization: Bearer <session-token-or-jwt>`
 
-### Auth Middleware (intended)
-- `requireApiAuth()` -> validates session/token.
-- `attachGiggleIdentity()` -> resolves `{ userId, providerAccountId, name, email, image }`.
-- `requireSquadMember()` / `requireSquadLeader()` -> authorization checks by squad role.
+### Auth Middleware (implemented)
+- `requireApiAuth()` -> validates bearer token and required identity claims.
+- `requireSquadMemberAccess()` -> loads squad context and ensures requester belongs to the squad.
+- `requireSquadLeaderAccess()` -> loads squad context and ensures requester is the squad leader.
 
 ### Identity Mapping
 ```ts
@@ -284,6 +284,7 @@ type Squad = {
 
 - **Endpoint:** `POST /squads/:squadId/leave`
 - **Purpose:** Member leaves squad; if leader leaves, promote next member.
+- **Auto-delete behavior:** If the leaving member is the last member, squad is deleted automatically.
 - **Intended Backend Function:** `leaveSquadHandler` -> `removeMemberAndReassignLeader()`
 - **Auth:** required (`requireApiAuth`, `requireSquadMember`)
 
@@ -311,6 +312,121 @@ type Squad = {
 - `403 FORBIDDEN`
 - `404 SQUAD_NOT_FOUND`
 - `404 MEMBER_NOT_FOUND`
+
+---
+
+## 1.6 Get My Squad Context
+
+- **Endpoint:** `GET /squads/me`
+- **Purpose:** Return current authenticated user's squad state (or no active squad).
+- **Auth:** required (`requireApiAuth`)
+
+### Success Response (200)
+```json
+{
+  "ok": true,
+  "data": {
+    "inSquad": true,
+    "squadId": "sq_01JY...",
+    "squadCode": "GIG-882",
+    "status": "idle",
+    "member": {
+      "memberId": "mem_01JY...",
+      "userId": "usr_01JY...",
+      "providerAccountId": "108923456789012345678",
+      "displayName": "Himanshu",
+      "role": "leader",
+      "ready": true,
+      "joinedAt": "2026-03-25T10:00:00.000Z"
+    },
+    "leaderMemberId": "mem_01JY...",
+    "members": []
+  }
+}
+```
+
+When user has no squad:
+```json
+{
+  "ok": true,
+  "data": {
+    "inSquad": false
+  }
+}
+```
+
+### Errors
+- `401 UNAUTHORIZED`
+
+---
+
+## 1.7 Start Squad Search (Leader Only)
+
+- **Endpoint:** `POST /squads/:squadId/search`
+- **Purpose:** Move squad from `idle` to `searching`.
+- **Auth:** required (`requireApiAuth` + leader-only access)
+
+### Preconditions
+- Requester is a squad member and leader.
+- Squad status is `idle`.
+- Squad has at least `MIN_MEMBERS_TO_SEARCH` members (env-configurable).
+- All members are `ready: true`.
+
+### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
+- `403 LEADER_ONLY`
+- `404 SQUAD_NOT_FOUND`
+- `409 INVALID_SQUAD_STATE`
+- `409 NOT_ENOUGH_MEMBERS`
+- `409 NOT_READY_TO_SEARCH`
+
+---
+
+## 1.8 Cancel Squad Search (Leader Only)
+
+- **Endpoint:** `POST /squads/:squadId/search/cancel`
+- **Purpose:** Move squad from `searching` to `idle`.
+- **Auth:** required (`requireApiAuth` + leader-only access)
+
+### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
+- `403 LEADER_ONLY`
+- `404 SQUAD_NOT_FOUND`
+- `409 NOT_IN_SEARCH`
+
+---
+
+## 1.9 Kick Member (Leader Only)
+
+- **Endpoint:** `POST /squads/:squadId/members/:memberId/kick`
+- **Purpose:** Remove target member from squad.
+- **Auth:** required (`requireApiAuth` + leader-only access)
+
+### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
+- `403 LEADER_ONLY`
+- `404 SQUAD_NOT_FOUND`
+- `404 MEMBER_NOT_FOUND`
+- `409 LEADER_CANNOT_BE_KICKED`
+
+---
+
+## 1.10 Promote Member to Leader (Leader Only)
+
+- **Endpoint:** `POST /squads/:squadId/members/:memberId/promote`
+- **Purpose:** Transfer leadership to another member.
+- **Auth:** required (`requireApiAuth` + leader-only access)
+
+### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
+- `403 LEADER_ONLY`
+- `404 SQUAD_NOT_FOUND`
+- `404 MEMBER_NOT_FOUND`
+- `409 ALREADY_LEADER`
 
 ---
 
