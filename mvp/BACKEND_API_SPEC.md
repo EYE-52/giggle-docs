@@ -469,20 +469,29 @@ When user has no squad:
 
 ## 2) Matchmaking APIs (Phase 2)
 
-## 2.1 Enqueue Squad
+Phase 2 uses the squad-state APIs in section 1 for queue entry/exit:
+- `POST /squads/:squadId/search` (start search)
+- `POST /squads/:squadId/search/cancel` (cancel search)
 
-- **Endpoint:** `POST /matchmaking/enqueue`
-- **Purpose:** Leader places squad in matchmaking queue.
-- **Intended Backend Function:** `enqueueSquadHandler` -> `enqueueSquadForMatch()`
-- **Auth:** required (`requireApiAuth`, `requireSquadLeader`)
+This section defines the dedicated matchmaking runtime APIs and matching rules.
 
-### Request Body
-```json
-{
-  "squadId": "sq_01JY...",
-  "region": "ap-south-1"
-}
-```
+### 2.0 Runtime Rules (Design Contract)
+
+- Queue strategy: bucket by `region` and `size`.
+- Window A (0-8s): same region + same size.
+- Window B (8-16s): same region + size difference <= 1.
+- Window C (16s+): region fallback + size difference <= 1.
+- Anti-repeat cooldown: avoid same squad pair for 10-15 minutes where possible.
+- Starvation prevention: older queued squads get priority bias.
+
+---
+
+## 2.1 Get Matchmaking Status
+
+- **Endpoint:** `GET /matchmaking/status/:squadId`
+- **Purpose:** Fetch current search or match state for a squad.
+- **Intended Backend Function:** `getMatchmakingStatusHandler` -> `getSquadMatchStatus()`
+- **Auth:** required (`requireApiAuth`, `requireSquadMemberAccess`)
 
 ### Success Response (200)
 ```json
@@ -490,9 +499,31 @@ When user has no squad:
   "ok": true,
   "data": {
     "squadId": "sq_01JY...",
-    "queueStatus": "searching",
-    "queuedAt": "2026-03-25T10:05:00.000Z",
-    "estimatedWaitSec": 20
+    "state": "searching",
+    "queue": {
+      "region": "ap-south-1",
+      "size": 2,
+      "queuedAt": "2026-03-25T10:05:00.000Z",
+      "waitSeconds": 7
+    },
+    "match": null
+  }
+}
+```
+
+Matched example:
+```json
+{
+  "ok": true,
+  "data": {
+    "squadId": "sq_01JY...",
+    "state": "matched",
+    "queue": null,
+    "match": {
+      "encounterId": "enc_01JY...",
+      "opponentSquadId": "sq_01JY_op",
+      "matchedAt": "2026-03-25T10:06:10.000Z"
+    }
   }
 }
 ```
@@ -500,18 +531,48 @@ When user has no squad:
 ### Errors
 - `401 UNAUTHORIZED`
 - `403 FORBIDDEN`
-- `403 LEADER_ONLY`
-- `409 ALREADY_IN_QUEUE`
-- `409 NOT_READY_TO_SEARCH`
+- `404 SQUAD_NOT_FOUND`
 
 ---
 
-## 2.2 Dequeue Squad
+## 2.2 Encounter Handoff Status
 
-- **Endpoint:** `POST /matchmaking/dequeue`
-- **Purpose:** Leader cancels matchmaking search.
-- **Intended Backend Function:** `dequeueSquadHandler` -> `dequeueSquad()`
-- **Auth:** required (`requireApiAuth`, `requireSquadLeader`)
+- **Endpoint:** `GET /matchmaking/encounters/:encounterId`
+- **Purpose:** Return encounter handoff state while clients transition from lobby to encounter room.
+- **Intended Backend Function:** `getEncounterHandoffHandler` -> `getEncounterHandoffStatus()`
+- **Auth:** required (`requireApiAuth`, `requireSquadMemberAccess`)
+
+### Success Response (200)
+```json
+{
+  "ok": true,
+  "data": {
+    "encounterId": "enc_01JY...",
+    "status": "awaiting_ack",
+    "squadAId": "sq_01JY_A",
+    "squadBId": "sq_01JY_B",
+    "ack": {
+      "sq_01JY_A": true,
+      "sq_01JY_B": false
+    },
+    "expiresAt": "2026-03-25T10:06:50.000Z"
+  }
+}
+```
+
+### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
+- `404 ENCOUNTER_NOT_FOUND`
+
+---
+
+## 2.3 Acknowledge Encounter Join
+
+- **Endpoint:** `POST /matchmaking/encounters/:encounterId/ack`
+- **Purpose:** Mark current squad as ready in encounter handoff flow; once both squads ack, state moves to `in_encounter`.
+- **Intended Backend Function:** `ackEncounterJoinHandler` -> `ackEncounterJoin()`
+- **Auth:** required (`requireApiAuth`, `requireSquadMemberAccess`)
 
 ### Request Body
 ```json
@@ -525,9 +586,10 @@ When user has no squad:
 {
   "ok": true,
   "data": {
+    "encounterId": "enc_01JY...",
     "squadId": "sq_01JY...",
-    "queueStatus": "idle",
-    "removed": true
+    "acknowledged": true,
+    "allAcked": false
   }
 }
 ```
@@ -535,51 +597,23 @@ When user has no squad:
 ### Errors
 - `401 UNAUTHORIZED`
 - `403 FORBIDDEN`
-- `403 LEADER_ONLY`
-- `404 NOT_IN_QUEUE`
+- `404 ENCOUNTER_NOT_FOUND`
+- `409 ENCOUNTER_EXPIRED`
 
 ---
 
-## 2.3 Get Matchmaking Status
-
-- **Endpoint:** `GET /matchmaking/status/:squadId`
-- **Purpose:** Fetch current matchmaking state.
-- **Intended Backend Function:** `getMatchmakingStatusHandler` -> `getSquadMatchStatus()`
-- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
-
-### Success Response (200)
-```json
-{
-  "ok": true,
-  "data": {
-    "squadId": "sq_01JY...",
-    "state": "matched",
-    "meetingId": "meet_01JY...",
-    "opponentSquadId": "sq_01JY_op",
-    "matchedAt": "2026-03-25T10:06:10.000Z"
-  }
-}
-```
-
-### Errors
-- `401 UNAUTHORIZED`
-- `403 FORBIDDEN`
-- `404 SQUAD_NOT_FOUND`
-
----
-
-## 2.4 Skip Encounter
+## 2.4 Skip Encounter (Leader Only)
 
 - **Endpoint:** `POST /matchmaking/skip`
 - **Purpose:** Leader requests disconnect and rematch.
 - **Intended Backend Function:** `skipEncounterHandler` -> `skipAndRequeueSquad()`
-- **Auth:** required (`requireApiAuth`, `requireSquadLeader`)
+- **Auth:** required (`requireApiAuth`, `requireSquadLeaderAccess`)
 
 ### Request Body
 ```json
 {
   "squadId": "sq_01JY...",
-  "meetingId": "meet_01JY..."
+  "encounterId": "enc_01JY..."
 }
 ```
 
@@ -589,7 +623,7 @@ When user has no squad:
   "ok": true,
   "data": {
     "squadId": "sq_01JY...",
-    "previousMeetingId": "meet_01JY...",
+    "previousEncounterId": "enc_01JY...",
     "queueStatus": "searching"
   }
 }
@@ -803,12 +837,14 @@ When user has no squad:
 3. `GET /squads/:squadId`
 4. `POST /squads/:squadId/ready`
 5. `POST /squads/:squadId/leave`
-6. `POST /matchmaking/enqueue`
-7. `POST /matchmaking/dequeue`
+6. `POST /squads/:squadId/search`
+7. `POST /squads/:squadId/search/cancel`
 8. `GET /matchmaking/status/:squadId`
-9. `POST /encounters/token`
-10. `POST /encounters/disconnect`
-11. `GET /health` + `GET /ready`
-12. `POST /events` (optional)
+9. `GET /matchmaking/encounters/:encounterId`
+10. `POST /matchmaking/encounters/:encounterId/ack`
+11. `POST /encounters/token`
+12. `POST /encounters/disconnect`
+13. `GET /health` + `GET /ready`
+14. `POST /events` (optional)
 
 This sequence gives a runnable MVP path: lobby -> queue -> match handoff -> video bootstrap.
