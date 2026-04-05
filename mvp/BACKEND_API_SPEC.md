@@ -848,3 +848,138 @@ Matched example:
 14. `POST /events` (optional)
 
 This sequence gives a runnable MVP path: lobby -> queue -> match handoff -> video bootstrap.
+
+---
+
+## 6) Manual Smoke Test (Matchmaking + Encounter)
+
+Use this checklist to validate the newly added server APIs before frontend integration.
+
+### 6.1 Setup Variables
+
+```bash
+export API_BASE="http://localhost:3001/api"
+export TOKEN_A="<backend_jwt_for_user_a>"
+export TOKEN_B="<backend_jwt_for_user_b>"
+```
+
+### 6.2 Create Two Squads and Capture IDs
+
+```bash
+# User A creates squad
+curl -s -X POST "$API_BASE/squads/create" \
+  -H "Authorization: Bearer $TOKEN_A" \
+  -H "Content-Type: application/json" \
+  -d '{"displayName":"Leader A"}'
+
+# User B creates squad
+curl -s -X POST "$API_BASE/squads/create" \
+  -H "Authorization: Bearer $TOKEN_B" \
+  -H "Content-Type: application/json" \
+  -d '{"displayName":"Leader B"}'
+```
+
+Copy `squadId` values from both responses:
+
+```bash
+export SQUAD_A_ID="<sq_from_user_a_response>"
+export SQUAD_B_ID="<sq_from_user_b_response>"
+```
+
+### 6.3 Mark Both Squads Ready and Start Search
+
+```bash
+curl -s -X POST "$API_BASE/squads/$SQUAD_A_ID/ready" \
+  -H "Authorization: Bearer $TOKEN_A" \
+  -H "Content-Type: application/json" \
+  -d '{"ready":true}'
+
+curl -s -X POST "$API_BASE/squads/$SQUAD_B_ID/ready" \
+  -H "Authorization: Bearer $TOKEN_B" \
+  -H "Content-Type: application/json" \
+  -d '{"ready":true}'
+
+curl -s -X POST "$API_BASE/squads/$SQUAD_A_ID/search" \
+  -H "Authorization: Bearer $TOKEN_A"
+
+curl -s -X POST "$API_BASE/squads/$SQUAD_B_ID/search" \
+  -H "Authorization: Bearer $TOKEN_B"
+```
+
+### 6.4 Verify Matchmaking Status
+
+```bash
+curl -s "$API_BASE/matchmaking/status/$SQUAD_A_ID" \
+  -H "Authorization: Bearer $TOKEN_A"
+```
+
+Expected:
+- `state` should become `matched`.
+- `match.encounterId` should be present.
+
+```bash
+export ENCOUNTER_ID="<encounter_id_from_status_response>"
+```
+
+### 6.5 Verify Encounter Handoff and ACK from Both Squads
+
+```bash
+curl -s "$API_BASE/matchmaking/encounters/$ENCOUNTER_ID" \
+  -H "Authorization: Bearer $TOKEN_A"
+
+curl -s -X POST "$API_BASE/matchmaking/encounters/$ENCOUNTER_ID/ack" \
+  -H "Authorization: Bearer $TOKEN_A" \
+  -H "Content-Type: application/json" \
+  -d "{\"squadId\":\"$SQUAD_A_ID\"}"
+
+curl -s -X POST "$API_BASE/matchmaking/encounters/$ENCOUNTER_ID/ack" \
+  -H "Authorization: Bearer $TOKEN_B" \
+  -H "Content-Type: application/json" \
+  -d "{\"squadId\":\"$SQUAD_B_ID\"}"
+```
+
+Expected:
+- after second ACK, `allAcked: true`
+- squads transition to `in_encounter`
+
+### 6.6 Issue Encounter Tokens
+
+```bash
+curl -s -X POST "$API_BASE/encounters/token" \
+  -H "Authorization: Bearer $TOKEN_A" \
+  -H "Content-Type: application/json" \
+  -d "{\"squadId\":\"$SQUAD_A_ID\",\"encounterId\":\"$ENCOUNTER_ID\"}"
+
+curl -s -X POST "$API_BASE/encounters/token" \
+  -H "Authorization: Bearer $TOKEN_B" \
+  -H "Content-Type: application/json" \
+  -d "{\"squadId\":\"$SQUAD_B_ID\",\"encounterId\":\"$ENCOUNTER_ID\"}"
+```
+
+Expected:
+- token payload with `channelName: encounter_<encounterId>`
+
+### 6.7 Disconnect Encounter
+
+```bash
+curl -s -X POST "$API_BASE/encounters/disconnect" \
+  -H "Authorization: Bearer $TOKEN_A" \
+  -H "Content-Type: application/json" \
+  -d "{\"squadId\":\"$SQUAD_A_ID\",\"encounterId\":\"$ENCOUNTER_ID\"}"
+```
+
+Expected:
+- encounter ends
+- squads return to `idle`
+
+### 6.8 Optional: Skip Encounter and Requeue
+
+```bash
+curl -s -X POST "$API_BASE/matchmaking/skip" \
+  -H "Authorization: Bearer $TOKEN_A" \
+  -H "Content-Type: application/json" \
+  -d "{\"squadId\":\"$SQUAD_A_ID\",\"encounterId\":\"$ENCOUNTER_ID\"}"
+```
+
+Expected:
+- `queueStatus: searching` for triggering squad
