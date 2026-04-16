@@ -129,30 +129,20 @@ Add later when the core loop works.
 
 ---
 
-## 4. Recommended Phase 1 Scope
+## 4. Implemented Scope (Current State)
 
-Your target Phase 1 flow is:
+Both lobby and encounter video are fully implemented. The current Agora flow covers:
 
-1. user logs in and creates a squad
-2. user shares invite
-3. invited user logs in
-4. invited user joins the squad
-5. both users can see/hear each other in the squad lobby
-6. leader can hit "start matchmaking" after both are ready
-
-This means Phase 1 is mainly a **private squad video lobby**, not full encounter switching.
-
-That is the right scope.
-
-Do not overbuild Phase 1.
-
-You only need to prove:
-
-- auth works
-- squad membership works
-- RTC join works
-- multi-user lobby video works
-- leader-only state changes work
+1. User joins squad → calls `POST /api/agora/lobby-token/:squadId` → joins `lobby_<squadId>`
+2. `inLobbyVideo` flag written to DB on join/leave via `POST /squads/:squadId/lobby-video`
+3. Squad leader starts search → matchmaking pairs two squads → encounter created
+4. **Auto-join encounter:** once the encounter handoff status becomes `active`, all squad members with `inLobbyVideo: true` automatically join the encounter Agora channel. No manual join button is needed; the frontend detects the match and transitions directly to encounter video.
+5. `inEncounterVideo` flag written to DB on join/leave via `POST /squads/:squadId/encounter-video`
+6. **UI consistency:** lobby and encounter pages should share the same landing-page-inspired palette so the product feels coherent across all stages.
+7. **Disconnect rules:**
+   - Leader disconnecting (`POST /encounters/disconnect`) ends the encounter for both squads
+   - Non-leader disconnecting only leaves the Agora channel locally; encounter stays alive
+7. Encounter auto-leave: the frontend polls for `matchStatus` every 3 s. If the active encounter disappears while the user is still in the encounter Agora channel, `leaveLobby()` is called automatically.
 
 ---
 
@@ -190,31 +180,27 @@ You only need to prove:
 
 Use deterministic channel naming.
 
-### Phase 1 Lobby Channel
+### Squad Lobby Channel
 
-For the squad lobby, use one RTC channel per squad.
-
-Suggested naming:
+For the squad lobby, one RTC channel per squad:
 
 - `lobby_<squadId>`
 
-Examples:
+Example: `lobby_sq_1712230000_abc123`
 
-- `lobby_sq_1712230000_abc123`
+All current squad members join the same private lobby channel.
 
-Why this works:
+### Encounter Channel
 
-- all current squad members join the same private lobby channel
-- easy to validate on backend
-- easy to leave later when moving to encounter room
+When both squads are matched and the encounter becomes active, a shared encounter channel is used:
 
-### Phase 2 Encounter Channel
+- `encounter_<encounterId>`
 
-Later, when matchmaking exists, generate a new meeting channel:
+Example: `encounter_enc_01JY...`
 
-- `meet_<meetingId>`
+> **Note:** The encounter prefix is `encounter_` (not `meet_`). The frontend uses this prefix to detect whether the current Agora channel is an encounter or a lobby.
 
-Then both squads leave their lobby channel and join the encounter channel.
+Both squads automatically leave their respective lobby channels and join the same encounter channel. UIDs remain deterministic per `encounterId:userId`.
 
 ---
 
@@ -406,25 +392,18 @@ Response:
 
 ---
 
-## 11. Recommended Frontend Modules For Agora Phase 1
+## 11. Implemented Frontend Modules
 
-Suggested frontend structure:
+Actual frontend structure:
 
-- `src/lib/agora/client.ts`
-- `src/lib/agora/tracks.ts`
-- `src/lib/agora/joinLobbyChannel.ts`
-- `src/components/lobby/LobbyVideoGrid.tsx`
-- `src/components/lobby/LocalTile.tsx`
-- `src/components/lobby/RemoteTile.tsx`
+- `src/lib/agora/useSquadLobbyAgora.ts` — single hook managing client lifetime, track creation, join/leave, and `remoteUsers` state
+- `src/components/lobby/LobbyClient.tsx` — main lobby UI; owns squad state, matchmaking state, and Agora auto-join logic
+- `src/components/lobby/VideoTile.tsx` — renders a single participant tile (local or remote track)
 
-Responsibilities:
-
-- one place to create Agora client
-- one place to create/publish tracks
-- one place to join/leave channel
-- one place to render participant tiles
-
-Keep UI thin. The real value in Phase 1 is reliable join/publish/subscribe behavior.
+Key implementation notes:
+- `joinLobby` / `leaveLobby` use a `joinedRef` (mutable ref) to guard against stale-closure bugs in async sequential calls (leave then immediately rejoin)
+- `leaveLobby` does **not** clear `remoteUsers`; Agora `user-left` events handle that
+- a `remoteUserSignature` memo (sorted UIDs joined with `|`) triggers an immediate squad re-sync whenever the Agora user list changes
 
 ---
 
@@ -496,49 +475,43 @@ This will save time when remote video does not appear.
 
 ---
 
-## 15. Recommended Build Order
+## 15. Current Build Status
 
-### First
+### Implemented ✅
 
-Implement private squad lobby video only:
+1. Squad lobby video (`lobby_<squadId>`) — local + remote tracks, mic/cam toggle
+2. Ready flow and leader-only search
+3. Matchmaking — squad pairs + encounter creation
+4. Encounter video (`encounter_<encounterId>`) — shared channel, both squads
+5. Auto-join encounter for all `inLobbyVideo` members
+6. Leader-only disconnect (ends encounter); non-leader just leaves Agora locally
+7. Encounter auto-leave on polling-detected encounter end
+8. Presence tracking (`inLobbyVideo`, `inEncounterVideo`) via backend DB flags
+9. Encounter split-screen UI (left = own squad, right = opponent)
 
-1. create squad
-2. join squad
-3. issue Agora lobby token
-4. join lobby channel
-5. publish local tracks
-6. subscribe to remote tracks
+### Not yet implemented
 
-### Second
-
-Add ready flow and leader-only search state.
-
-### Third
-
-Add matchmaking and switch from:
-
-- `lobby_<squadId>`
-
-to:
-
-- `meet_<meetingId>`
+- Redis queue (currently MongoDB-based matching)
+- WebSocket signaling (currently short-poll every 2–3 s)
+- Cloud recording
+- Moderation / AI safety layer
+- Token renewal on expiry during active session
 
 ---
 
-## 16. Recommendation Summary
+## 16. Summary
 
-For Giggle Phase 1, use:
+For Giggle (current implemented state):
 
-- Agora RTC / Video SDK: yes
-- Agora token authentication: yes
-- Agora Signaling: no, not yet
-- Agora recording/moderation/effects: no, not yet
+- Agora RTC / Video SDK: **in use** (lobby + encounter)
+- Agora token authentication: **in use** (backend-issued, squad/encounter validated)
+- Agora Signaling: **not used** (replaced by short-poll on Giggle backend)
+- Agora recording/moderation/effects: **not used**
 
-Best Phase 1 architecture:
+Current architecture:
 
-- Giggle backend owns auth, squad state, ready state, permissions, matchmaking state
-- Agora owns live media transport
-- one private Agora lobby channel per squad
-- leader-only search action stays in Giggle backend
-
-This is the shortest path to a working demo that actually proves the product.
+- Giggle backend owns auth, squad state, ready state, permissions, matchmaking state, presence flags
+- Agora owns live media transport only
+- One private lobby channel per squad (`lobby_<squadId>`)
+- One shared encounter channel per encounter (`encounter_<encounterId>`)
+- Leader-only search and disconnect control remain entirely in Giggle backend

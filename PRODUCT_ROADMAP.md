@@ -20,6 +20,7 @@ The first set of components focuses on the "Pre-Match" experience. This is where
 * **Self-View Grid:** A private video area where the squad can talk and see each other before being matched with strangers.
 * **Member Management:** Ability for the leader to kick or promote other members.
 * **Live Status Indicators:** Visual cues showing "Searching," "Matching," or "Connected."
+* **Unified Visual System:** Lobby and encounter screens should follow the same landing page palette to make the experience feel cohesive and premium.
 
 ---
 

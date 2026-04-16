@@ -77,14 +77,20 @@ type SquadMember = {
   displayName: string;
   role: SquadRole;
   ready: boolean;
+  inLobbyVideo: boolean;      // true while member is in the Agora squad lobby channel
+  inEncounterVideo: boolean;  // true while member is in the Agora encounter channel
   joinedAt: string; // ISO
 };
 
 type Squad = {
   squadId: string;
-  squadCode: string; // ex: GIG-882
+  squadCode: string; // ex: WGK-025
+  squadName: string; // editable by leader, max 32 chars
   status: LobbyStatus;
   members: SquadMember[];
+  leaderMemberId: string | null;
+  currentEncounterId: string | null;
+  opponentSquadId: string | null;
   createdAt: string; // ISO
 };
 ```
@@ -360,77 +366,77 @@ When user has no squad:
 
 ---
 
-## 1.7 Start Squad Search (Leader Only)
+## 1.7 Update Squad Name (Leader Only)
 
-- **Endpoint:** `POST /squads/:squadId/search`
-- **Purpose:** Move squad from `idle` to `searching`.
+- **Endpoint:** `POST /squads/:squadId/name`
+- **Purpose:** Change the squad display name.
 - **Auth:** required (`requireApiAuth` + leader-only access)
 
-### Preconditions
-- Requester is a squad member and leader.
-- Squad status is `idle`.
-- Squad has at least `MIN_MEMBERS_TO_SEARCH` members (env-configurable).
-- All members are `ready: true`.
+### Request Body
+```json
+{ "squadName": "dream team" }
+```
+
+### Success Response (200)
+```json
+{ "ok": true, "data": { "squadId": "sq_01JY...", "squadName": "dream team" } }
+```
 
 ### Errors
+- `400 INVALID_REQUEST` (empty or > 32 chars)
 - `401 UNAUTHORIZED`
-- `403 FORBIDDEN`
 - `403 LEADER_ONLY`
 - `404 SQUAD_NOT_FOUND`
-- `409 INVALID_SQUAD_STATE`
-- `409 NOT_ENOUGH_MEMBERS`
-- `409 NOT_READY_TO_SEARCH`
 
 ---
 
-## 1.8 Cancel Squad Search (Leader Only)
+## 1.8 Set Lobby Video Presence
 
-- **Endpoint:** `POST /squads/:squadId/search/cancel`
-- **Purpose:** Move squad from `searching` to `idle`.
-- **Auth:** required (`requireApiAuth` + leader-only access)
+- **Endpoint:** `POST /squads/:squadId/lobby-video`
+- **Purpose:** Track whether a member is currently in the Agora squad lobby channel. Called by the frontend on join and leave. Setting `inLobbyVideo: false` also clears `inEncounterVideo`.
+- **Auth:** required (`requireApiAuth`, `requireSquadMemberAccess`)
+
+### Request Body
+```json
+{ "inLobbyVideo": true }
+```
+
+### Success Response (200)
+```json
+{ "ok": true, "data": { "memberId": "mem_01JY...", "inLobbyVideo": true } }
+```
 
 ### Errors
+- `400 INVALID_REQUEST` (`inLobbyVideo` not a boolean)
 - `401 UNAUTHORIZED`
 - `403 FORBIDDEN`
-- `403 LEADER_ONLY`
-- `404 SQUAD_NOT_FOUND`
-- `409 NOT_IN_SEARCH`
 
 ---
 
-## 1.9 Kick Member (Leader Only)
+## 1.9 Set Encounter Video Presence
 
-- **Endpoint:** `POST /squads/:squadId/members/:memberId/kick`
-- **Purpose:** Remove target member from squad.
-- **Auth:** required (`requireApiAuth` + leader-only access)
+- **Endpoint:** `POST /squads/:squadId/encounter-video`
+- **Purpose:** Track whether a member has joined the Agora encounter channel. Used by other squad members (who may not be in Agora) to see who is in the encounter. Called on auto-join and manual join/leave of the encounter channel.
+- **Auth:** required (`requireApiAuth`, `requireSquadMemberAccess`)
+
+### Request Body
+```json
+{ "inEncounterVideo": true }
+```
+
+### Success Response (200)
+```json
+{ "ok": true, "data": { "memberId": "mem_01JY...", "inEncounterVideo": true } }
+```
 
 ### Errors
+- `400 INVALID_REQUEST` (`inEncounterVideo` not a boolean)
 - `401 UNAUTHORIZED`
 - `403 FORBIDDEN`
-- `403 LEADER_ONLY`
-- `404 SQUAD_NOT_FOUND`
-- `404 MEMBER_NOT_FOUND`
-- `409 LEADER_CANNOT_BE_KICKED`
 
 ---
 
-## 1.10 Promote Member to Leader (Leader Only)
-
-- **Endpoint:** `POST /squads/:squadId/members/:memberId/promote`
-- **Purpose:** Transfer leadership to another member.
-- **Auth:** required (`requireApiAuth` + leader-only access)
-
-### Errors
-- `401 UNAUTHORIZED`
-- `403 FORBIDDEN`
-- `403 LEADER_ONLY`
-- `404 SQUAD_NOT_FOUND`
-- `404 MEMBER_NOT_FOUND`
-- `409 ALREADY_LEADER`
-
----
-
-## 1.11 Get Agora Lobby Token
+## 1.10 Get Agora Lobby Token
 
 - **Endpoint:** `POST /agora/lobby-token/:squadId`
 - **Purpose:** Issue Agora RTC token for squad lobby channel.
@@ -467,24 +473,89 @@ When user has no squad:
 
 ---
 
-## 2) Matchmaking APIs (Phase 2)
+## 1.11 Start Squad Search (Leader Only)
 
-Phase 2 uses the squad-state APIs in section 1 for queue entry/exit:
-- `POST /squads/:squadId/search` (start search)
-- `POST /squads/:squadId/search/cancel` (cancel search)
+- **Endpoint:** `POST /squads/:squadId/search`
+- **Purpose:** Move squad from `idle` to `searching`.
+- **Auth:** required (`requireApiAuth` + leader-only access)
 
-This section defines the dedicated matchmaking runtime APIs and matching rules.
+### Preconditions
+- Requester is a squad member and leader.
+- Squad status is `idle`.
+- Squad has at least `MIN_MEMBERS_TO_SEARCH` members (`appConfig.js`, default **1** — solo search allowed).
+- All members are `ready: true`.
 
-### 2.0 Runtime Rules (Design Contract)
-
-- Queue strategy: bucket by `region` and `size`.
-- Window A (0-8s): same region + same size.
-- Window B (8-16s): same region + size difference <= 1.
-- Window C (16s+): region fallback + size difference <= 1.
-- Anti-repeat cooldown: avoid same squad pair for 10-15 minutes where possible.
-- Starvation prevention: older queued squads get priority bias.
+### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
+- `403 LEADER_ONLY`
+- `404 SQUAD_NOT_FOUND`
+- `409 INVALID_SQUAD_STATE`
+- `409 NOT_ENOUGH_MEMBERS`
+- `409 NOT_READY_TO_SEARCH`
 
 ---
+
+## 1.12 Cancel Squad Search (Leader Only)
+
+- **Endpoint:** `POST /squads/:squadId/search/cancel`
+- **Purpose:** Move squad from `searching` to `idle`.
+- **Auth:** required (`requireApiAuth` + leader-only access)
+
+### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
+- `403 LEADER_ONLY`
+- `404 SQUAD_NOT_FOUND`
+- `409 NOT_IN_SEARCH`
+
+---
+
+## 1.13 Kick Member (Leader Only)
+
+- **Endpoint:** `POST /squads/:squadId/members/:memberId/kick`
+- **Purpose:** Remove target member from squad.
+- **Auth:** required (`requireApiAuth` + leader-only access)
+
+### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
+- `403 LEADER_ONLY`
+- `404 SQUAD_NOT_FOUND`
+- `404 MEMBER_NOT_FOUND`
+- `409 LEADER_CANNOT_BE_KICKED`
+
+---
+
+## 1.14 Promote Member to Leader (Leader Only)
+
+- **Endpoint:** `POST /squads/:squadId/members/:memberId/promote`
+- **Purpose:** Transfer leadership to another member.
+- **Auth:** required (`requireApiAuth` + leader-only access)
+
+### Errors
+- `401 UNAUTHORIZED`
+- `403 FORBIDDEN`
+- `403 LEADER_ONLY`
+- `404 SQUAD_NOT_FOUND`
+- `404 MEMBER_NOT_FOUND`
+- `409 ALREADY_LEADER`
+
+---
+
+## 2) Matchmaking APIs
+
+> All matchmaking APIs are **implemented**. Queue is backed by MongoDB (not Redis); matching runs synchronously on search start using a score-based candidate picker.
+
+Start/cancel search use the squad-state APIs in section 1:
+- `POST /squads/:squadId/search` (§1.11)
+- `POST /squads/:squadId/search/cancel` (§1.12)
+
+### 2.0 Matching Algorithm (Implemented)
+
+- Candidates are all squads with `status: "searching"` in MongoDB.
+- Score = `|sizeDiff| × 40 − min(waitSeconds, 60)`.
+- Lowest score wins. Match created immediately once a candidate exists.
 
 ## 2.1 Get Matchmaking Status
 
@@ -550,7 +621,9 @@ Matched example:
     "encounterId": "enc_01JY...",
     "status": "awaiting_ack",
     "squadAId": "sq_01JY_A",
+    "squadAName": "awesome sauce",
     "squadBId": "sq_01JY_B",
+    "squadBName": "dream team",
     "ack": {
       "sq_01JY_A": true,
       "sq_01JY_B": false
@@ -570,7 +643,7 @@ Matched example:
 ## 2.3 Acknowledge Encounter Join
 
 - **Endpoint:** `POST /matchmaking/encounters/:encounterId/ack`
-- **Purpose:** Mark current squad as ready in encounter handoff flow; once both squads ack, state moves to `in_encounter`.
+- **Purpose:** Mark current squad as acknowledged in encounter handoff flow; once both squads ack, state moves to `active`. This endpoint is called automatically by the frontend when a match is detected.
 - **Intended Backend Function:** `ackEncounterJoinHandler` -> `ackEncounterJoin()`
 - **Auth:** required (`requireApiAuth`, `requireSquadMemberAccess`)
 
@@ -637,57 +710,20 @@ Matched example:
 
 ---
 
-## 3) Encounter / Video Bootstrap APIs (Phase 3)
+## 3) Encounter / Video APIs
 
-## 3.1 Create Agora Token
+> All encounter APIs are **implemented**.
+
+## 3.1 Issue Encounter Agora Token
 
 - **Endpoint:** `POST /encounters/token`
-- **Purpose:** Issue short-lived Agora token for a meeting/channel.
-- **Intended Backend Function:** `issueAgoraTokenHandler` -> `createRtcToken()`
-- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
+- **Purpose:** Issue Agora RTC token for the shared encounter channel. Validates the requester belongs to the squad and the squad is currently in the given encounter.
+- **Auth:** required (`requireApiAuth`)
 
 ### Request Body
 ```json
 {
-  "meetingId": "meet_01JY...",
-  "squadId": "sq_01JY...",
-  "role": "publisher"
-}
-```
-
-### Success Response (200)
-```json
-{
-  "ok": true,
-  "data": {
-    "meetingId": "meet_01JY...",
-    "agoraChannel": "giggle_meet_01JY...",
-    "agoraUid": "109999999999999999999",
-    "rtcToken": "<token>",
-    "expiresAt": "2026-03-25T11:06:10.000Z"
-  }
-}
-```
-
-### Errors
-- `401 UNAUTHORIZED`
-- `403 FORBIDDEN`
-- `403 MEMBER_NOT_IN_MEETING`
-- `404 MEETING_NOT_FOUND`
-
----
-
-## 3.2 Disconnect from Encounter
-
-- **Endpoint:** `POST /encounters/disconnect`
-- **Purpose:** Leave active encounter and return member/squad to lobby flow.
-- **Intended Backend Function:** `disconnectEncounterHandler` -> `disconnectMemberFromMeeting()`
-- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
-
-### Request Body
-```json
-{
-  "meetingId": "meet_01JY...",
+  "encounterId": "enc_01JY...",
   "squadId": "sq_01JY..."
 }
 ```
@@ -697,51 +733,75 @@ Matched example:
 {
   "ok": true,
   "data": {
-    "meetingId": "meet_01JY...",
-    "memberId": "mem_01JY_member",
-    "disconnected": true,
-    "squadStatus": "idle"
+    "encounterId": "enc_01JY...",
+    "squadId": "sq_01JY...",
+    "memberId": "mem_01JY...",
+    "appId": "your-agora-app-id",
+    "channelName": "encounter_enc_01JY...",
+    "rtcToken": "007eJx...",
+    "uid": 987654321,
+    "expiresIn": 3600,
+    "expiresAt": "2026-04-03T15:00:00.000Z"
   }
 }
 ```
 
+> **Channel naming:** encounter channels use the prefix `encounter_` (e.g. `encounter_enc_01JY...`). This differs from lobby channels which use `lobby_`.
+
 ### Errors
+- `400 INVALID_REQUEST` (missing `squadId` or `encounterId`)
 - `401 UNAUTHORIZED`
-- `403 FORBIDDEN`
-- `404 MEETING_NOT_FOUND`
-- `404 MEMBER_NOT_FOUND`
+- `403 MEMBER_NOT_IN_ENCOUNTER`
+- `404 ENCOUNTER_NOT_FOUND`
+- `500 AGORA_NOT_CONFIGURED`
 
 ---
 
-## 3.3 Get Encounter Metadata
+## 3.2 Disconnect from Encounter
 
-- **Endpoint:** `GET /encounters/:meetingId`
-- **Purpose:** Fetch metadata required by clients for rendering context.
-- **Intended Backend Function:** `getEncounterHandler` -> `getMeetingDetails()`
-- **Auth:** required (`requireApiAuth`, `requireSquadMember`)
+- **Endpoint:** `POST /encounters/disconnect`
+- **Purpose:** Leave the active encounter. Behavior differs by role:
+  - **Leader:** ends the encounter for both squads (both squads return to `idle`). The frontend then clears match state.
+  - **Non-leader:** server returns success with `isLeaderDisconnect: false`. The encounter stays alive. The client simply leaves the Agora channel locally.
+- **Auth:** required (`requireApiAuth`)
+
+### Request Body
+```json
+{
+  "encounterId": "enc_01JY...",
+  "squadId": "sq_01JY..."
+}
+```
 
 ### Success Response (200)
 ```json
 {
   "ok": true,
   "data": {
-    "meetingId": "meet_01JY...",
-    "leftSquadId": "sq_01JY_A",
-    "rightSquadId": "sq_01JY_B",
-    "createdAt": "2026-03-25T10:06:10.000Z",
-    "status": "active"
+    "encounterId": "enc_01JY...",
+    "memberId": "mem_01JY...",
+    "disconnected": true,
+    "isLeaderDisconnect": true,
+    "squadStatus": "idle"
   }
 }
 ```
 
+For non-leader:
+```json
+{ "ok": true, "data": { "disconnected": true, "isLeaderDisconnect": false, "squadStatus": "in_encounter" } }
+```
+
 ### Errors
+- `400 INVALID_REQUEST`
 - `401 UNAUTHORIZED`
 - `403 FORBIDDEN`
-- `404 MEETING_NOT_FOUND`
+- `404 ENCOUNTER_NOT_FOUND`
+- `409 NOT_IN_ENCOUNTER`
 
 ---
 
-## 4) Platform/Ops APIs (Phase 4)
+## 4) Platform / Ops APIs
 
 ## 4.1 Health Check
 
